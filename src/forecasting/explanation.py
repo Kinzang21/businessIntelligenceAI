@@ -201,3 +201,152 @@ def build_forecast_explanation(
         "pattern_statement": pattern_statement,
         "caution_statement": caution_statement,
     }
+
+def build_reorder_explanation(
+    product_name: str,
+    recommendation: dict,
+) -> dict:
+    """
+    Generate deterministic, business-friendly explanations
+    for inventory replenishment recommendations.
+
+    All explanations are derived from calculated inventory
+    values and the recommended order quantity.
+    """
+
+    current_stock = float(
+        recommendation["current_stock"]
+    )
+
+    incoming_stock = float(
+        recommendation["incoming_stock"]
+    )
+
+    stock_position = float(
+        recommendation["stock_position"]
+    )
+
+    forecast_demand = float(
+        recommendation["total_forecast_demand"]
+    )
+
+    safety_stock = float(
+        recommendation["safety_stock"]
+    )
+
+    reorder_point = float(
+        recommendation["reorder_point"]
+    )
+
+    recommended_quantity = int(
+        recommendation["recommended_order_quantity"]
+    )
+
+    minimum_order_quantity = int(
+        recommendation["minimum_order_quantity"]
+    )
+
+    pack_size = int(
+        recommendation["pack_size"]
+    )
+
+    status = str(
+        recommendation["status"]
+    )
+
+    # Explain the current inventory situation.
+    if current_stock <= 0 and incoming_stock <= 0:
+        stock_risk = (
+            "No stock is currently available, and no incoming "
+            "stock has been recorded."
+        )
+
+    elif current_stock <= 0 and incoming_stock > 0:
+        stock_risk = (
+            "Current stock is zero, but incoming stock has "
+            "been recorded. Confirm its expected arrival date."
+        )
+
+    elif stock_position <= reorder_point:
+        stock_risk = (
+            "The available stock position is at or below "
+            "the calculated reorder point."
+        )
+
+    else:
+        stock_risk = (
+            "The available stock position is above the "
+            "calculated reorder point."
+        )
+
+    # Explain the replenishment decision.
+    if recommended_quantity > 0:
+        reorder_reason = (
+            f"Forecast demand over the next "
+            f"{recommendation['forecast_horizon_days']} days is "
+            f"{forecast_demand:.2f} units. After accounting for "
+            f"current stock, incoming stock, and safety stock, "
+            f"the recommended order quantity is "
+            f"{recommended_quantity} units."
+        )
+
+        if (
+            minimum_order_quantity > 0
+            and recommended_quantity >= minimum_order_quantity
+        ):
+            reorder_reason += (
+                f" The supplier minimum order quantity is "
+                f"{minimum_order_quantity} units."
+            )
+
+        if pack_size > 1:
+            reorder_reason += (
+                f" The recommended quantity follows a pack "
+                f"size of {pack_size} units."
+            )
+
+        if current_stock <= 0 and incoming_stock <= 0:
+            recommended_action = (
+                "Prioritize replenishment and confirm supplier "
+                "availability before placing an order."
+            )
+
+        elif current_stock <= 0 and incoming_stock > 0:
+            recommended_action = (
+                "Check when the incoming stock will arrive. "
+                "Consider additional replenishment if it will "
+                "not arrive in time to meet expected demand."
+            )
+
+        else:
+            recommended_action = (
+                "Review the recommendation and confirm supplier "
+                "availability before placing the order."
+            )
+
+    else:
+        reorder_reason = (
+            "No additional order is recommended because current "
+            "stock and incoming stock are sufficient to cover "
+            "the forecast demand and safety stock under the "
+            "current calculation."
+        )
+
+        recommended_action = (
+            "No additional order is recommended by the current "
+            "forecast and inventory calculation. Reassess if "
+            "demand or delivery conditions change."
+        )
+
+    return {
+        "product_name": product_name,
+        "inventory_status": status,
+        "stock_risk": stock_risk,
+        "reorder_reason": reorder_reason,
+        "recommended_action": recommended_action,
+        "recommended_order_quantity": recommended_quantity,
+        "forecast_demand": round(forecast_demand, 2),
+        "stock_position": round(stock_position, 2),
+        "reorder_point": round(reorder_point, 2),
+        "safety_stock": round(safety_stock, 2),
+    }

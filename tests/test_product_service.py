@@ -131,3 +131,27 @@ def test_missing_inventory_product_is_skipped():
         skipped.iloc[0]["reason"]
         == "No inventory record found."
     )
+
+def test_forecast_products_includes_reorder_explanations():
+    sales_df = create_sales_data()
+    inventory_df = create_inventory_data()
+
+    result, skipped = forecast_products(
+        sales_df=sales_df,
+        inventory_df=inventory_df,
+    )
+
+    assert not result.empty
+    assert skipped.empty
+
+    expected_columns = {
+        "stock_risk",
+        "reorder_reason",
+        "recommended_action",
+    }
+
+    assert expected_columns.issubset(result.columns)
+
+    for column in expected_columns:
+        assert result[column].notna().all()
+        assert result[column].astype(str).str.strip().ne("").all()

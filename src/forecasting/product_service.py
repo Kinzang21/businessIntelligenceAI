@@ -2,6 +2,7 @@ import pandas as pd
 
 from src.forecasting.explanation import (
     build_forecast_explanation,
+    build_reorder_explanation, 
 )
 from src.analytics.forecast_inventory import (
     create_forecast_inventory_recommendation,
@@ -23,15 +24,27 @@ def forecast_products(
     min_history_days: int = 60,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Generate product-level demand forecasts and inventory recommendations.
+    Generate product-level forecasts and inventory recommendations.
+
+    Optional inventory columns:
+        product_id
+        supplier_id
+        supplier_name
+        lead_time_days
+        safety_stock
+        incoming_stock
+        minimum_order_quantity
+        pack_size
+
+    Products are matched by product_id when both datasets have it.
+    Otherwise, matching falls back to product_name.
 
     Returns:
         successful_results:
-            Products for which forecasting and inventory recommendation
-            were successfully completed.
+            Forecasts and inventory recommendations.
 
         skipped_products:
-            Products that could not be forecasted, together with the reason.
+            Products that could not be processed, with reasons.
     """
 
     required_sales_columns = {
@@ -45,14 +58,20 @@ def forecast_products(
         "closing_stock",
     }
 
-    missing_sales = required_sales_columns - set(sales_df.columns)
+    missing_sales = (
+        required_sales_columns - set(sales_df.columns)
+    )
+
     if missing_sales:
         raise ValueError(
             "Missing required sales columns: "
             + ", ".join(sorted(missing_sales))
         )
 
-    missing_inventory = required_inventory_columns - set(inventory_df.columns)
+    missing_inventory = (
+        required_inventory_columns - set(inventory_df.columns)
+    )
+
     if missing_inventory:
         raise ValueError(
             "Missing required inventory columns: "
@@ -60,16 +79,97 @@ def forecast_products(
         )
 
     if horizon <= 0:
-        raise ValueError("Horizon must be greater than zero.")
+        raise ValueError(
+            "Horizon must be greater than zero."
+        )
 
     if lead_time_days < 0:
-        raise ValueError("Lead time cannot be negative.")
+        raise ValueError(
+            "Lead time cannot be negative."
+        )
 
     if safety_stock < 0:
-        raise ValueError("Safety stock cannot be negative.")
+        raise ValueError(
+            "Safety stock cannot be negative."
+        )
+
+    sales = sales_df.copy()
+    inventory = inventory_df.copy()
+
+    # Normalize product names for matching.
+    sales["product_name"] = (
+        sales["product_name"]
+        .astype("string")
+        .str.strip()
+    )
+
+    inventory["product_name"] = (
+        inventory["product_name"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # Use product IDs as the preferred matching key when
+    # both datasets provide them.
+    use_product_id = (
+        "product_id" in sales.columns
+        and "product_id" in inventory.columns
+    )
+
+    if use_product_id:
+        sales["product_id"] = (
+            sales["product_id"]
+            .astype("string")
+            .str.strip()
+        )
+
+        inventory["product_id"] = (
+            inventory["product_id"]
+            .astype("string")
+            .str.strip()
+        )
+
+    inventory["closing_stock"] = pd.to_numeric(
+        inventory["closing_stock"],
+        errors="coerce",
+    )
+
+    optional_numeric_columns = [
+        "lead_time_days",
+        "safety_stock",
+        "incoming_stock",
+        "minimum_order_quantity",
+        "pack_size",
+    ]
+
+    for column in optional_numeric_columns:
+        if column in inventory.columns:
+            inventory[column] = pd.to_numeric(
+                inventory[column],
+                errors="coerce",
+            )
+
+    # Reject unusable inventory rows rather than treating
+    # missing stock values as zero.
+    inventory = inventory.dropna(
+        subset=["product_name", "closing_stock"]
+    )
+
+    # Duplicate product records must not be selected arbitrarily.
+    matching_key = (
+        "product_id"
+        if use_product_id
+        else "product_name"
+    )
+
+    if inventory[matching_key].duplicated().any():
+        raise ValueError(
+            f"Inventory contains duplicate {matching_key} values. "
+            "Resolve duplicate inventory records before forecasting."
+        )
 
     products = sorted(
-        sales_df["product_name"]
+        sales["product_name"]
         .dropna()
         .astype(str)
         .unique()
@@ -80,8 +180,12 @@ def forecast_products(
 
     for product_name in products:
         try:
+            product_sales = sales[
+                sales["product_name"] == product_name
+            ]
+
             daily_demand = prepare_daily_demand(
-                sales_df,
+                product_sales,
                 product_name,
             )
 
@@ -108,10 +212,37 @@ def forecast_products(
                 horizon=horizon,
             )
 
-            product_inventory = inventory_df[
-                inventory_df["product_name"].astype(str)
-                == product_name
-            ]
+            # Match by ID when both datasets have IDs.
+            if use_product_id:
+                product_ids = (
+                    product_sales["product_id"]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .unique()
+                )
+
+                if len(product_ids) != 1:
+                    skipped_products.append(
+                        {
+                            "product_name": product_name,
+                            "reason": (
+                                "Sales data does not contain exactly "
+                                "one product ID for this product name."
+                            ),
+                        }
+                    )
+                    continue
+
+                product_inventory = inventory[
+                    inventory["product_id"].astype(str).str.strip()
+                    == product_ids[0]
+                ]
+            else:
+                product_inventory = inventory[
+                    inventory["product_name"].astype(str)
+                    == product_name
+                ]
 
             if product_inventory.empty:
                 skipped_products.append(
@@ -122,18 +253,70 @@ def forecast_products(
                 )
                 continue
 
+            inventory_row = product_inventory.iloc[0]
+
             current_stock = float(
-                product_inventory["closing_stock"].iloc[-1]
+                inventory_row["closing_stock"]
             )
 
-            recommendation = create_forecast_inventory_recommendation(
-                current_stock=current_stock,
-                forecast=forecast_result["forecast"],
-                average_daily_demand=summary[
-                    "average_daily_demand"
-                ],
-                lead_time_days=lead_time_days,
-                safety_stock=safety_stock,
+            def get_optional_number(
+                column: str,
+                default: float,
+            ) -> float:
+                if column not in inventory_row.index:
+                    return default
+
+                value = inventory_row[column]
+
+                if pd.isna(value):
+                    return default
+
+                return float(value)
+
+            product_lead_time = int(
+                get_optional_number(
+                    "lead_time_days",
+                    lead_time_days,
+                )
+            )
+
+            product_safety_stock = get_optional_number(
+                "safety_stock",
+                safety_stock,
+            )
+
+            incoming_stock = get_optional_number(
+                "incoming_stock",
+                0,
+            )
+
+            minimum_order_quantity = int(
+                get_optional_number(
+                    "minimum_order_quantity",
+                    0,
+                )
+            )
+
+            pack_size = int(
+                get_optional_number(
+                    "pack_size",
+                    1,
+                )
+            )
+
+            recommendation = (
+                create_forecast_inventory_recommendation(
+                    current_stock=current_stock,
+                    forecast=forecast_result["forecast"],
+                    average_daily_demand=summary[
+                        "average_daily_demand"
+                    ],
+                    lead_time_days=product_lead_time,
+                    safety_stock=product_safety_stock,
+                    incoming_stock=incoming_stock,
+                    minimum_order_quantity=minimum_order_quantity,
+                    pack_size=pack_size,
+                )
             )
 
             explanation = build_forecast_explanation(
@@ -150,69 +333,103 @@ def forecast_products(
                 reliability=forecast_result["reliability"],
             )
 
-            successful_results.append(
-                {
-                    "product_name": product_name,
-                    "forecast_horizon_days": horizon,
-                    "forecast_demand": round(
-                        recommendation["total_forecast_demand"],
-                        2,
-                    ),
-
-                    "reliability_rating": explanation[
-                        "reliability_rating"
-                    ],
-                    "accuracy_statement": explanation[
-                        "accuracy_statement"
-                    ],
-                    "stability_statement": explanation[
-                        "stability_statement"
-                    ],
-                    "trend_statement": explanation[
-                        "trend_statement"
-                    ],
-                    "trend": explanation[
-                        "trend"
-                    ],
-                    "trend_evidence": explanation[
-                        "trend_evidence"
-                    ],
-                    "trend_confidence": explanation[
-                        "trend_confidence"
-                    ],
-                    "pattern_statement": explanation[
-                        "pattern_statement"
-                    ],
-                    "caution_statement": explanation[
-                        "caution_statement"
-                    ],
-                    "current_stock": round(
-                        current_stock,
-                        2,
-                    ),
-                    "reorder_point": round(
-                        recommendation["reorder_point"],
-                        2,
-                    ),
-                    "recommended_order_quantity": (
-                        recommendation[
-                            "recommended_order_quantity"
-                        ]
-                    ),
-                    "status": recommendation["status"],
-                    "best_model": forecast_result["best_model"],
-                    "wape": round(
-                        forecast_result["model_performance"]["wape"],
-                        2,
-                    ),
-                    "reliability_score": round(
-                        forecast_result["reliability"]["score"],
-                        2,
-                    ),
-                }
+            reorder_explanation = build_reorder_explanation(
+                product_name=product_name,
+                recommendation=recommendation,
             )
 
-        except (ValueError, KeyError, TypeError) as exc:
+            result_row = {
+                "product_name": product_name,
+                "forecast_horizon_days": horizon,
+                "forecast_demand": round(
+                    recommendation["total_forecast_demand"],
+                    2,
+                ),
+                "reliability_rating": explanation[
+                    "reliability_rating"
+                ],
+                "accuracy_statement": explanation[
+                    "accuracy_statement"
+                ],
+                "stability_statement": explanation[
+                    "stability_statement"
+                ],
+                "trend_statement": explanation[
+                    "trend_statement"
+                ],
+                "trend": explanation["trend"],
+                "trend_evidence": explanation[
+                    "trend_evidence"
+                ],
+                "trend_confidence": explanation[
+                    "trend_confidence"
+                ],
+                "pattern_statement": explanation[
+                    "pattern_statement"
+                ],
+                "caution_statement": explanation[
+                    "caution_statement"
+                ],
+                "current_stock": round(
+                    recommendation["current_stock"],
+                    2,
+                ),
+                "incoming_stock": round(
+                    recommendation["incoming_stock"],
+                    2,
+                ),
+                "stock_position": round(
+                    recommendation["stock_position"],
+                    2,
+                ),
+                "lead_time_days": product_lead_time,
+                "safety_stock": product_safety_stock,
+                "reorder_point": round(
+                    recommendation["reorder_point"],
+                    2,
+                ),
+                "minimum_order_quantity": minimum_order_quantity,
+                "pack_size": pack_size,
+                "recommended_order_quantity": (
+                    recommendation[
+                        "recommended_order_quantity"
+                    ]
+                ),
+                "status": recommendation["status"],
+                "stock_risk": reorder_explanation["stock_risk"],
+                "reorder_reason": reorder_explanation["reorder_reason"],
+                "recommended_action": reorder_explanation[
+                    "recommended_action"
+                ],
+                "best_model": forecast_result["best_model"],
+                "wape": round(
+                    forecast_result["model_performance"]["wape"],
+                    2,
+                ),
+                "reliability_score": round(
+                    forecast_result["reliability"]["score"],
+                    2,
+                ),
+            }
+
+            if "product_id" in inventory_row.index:
+                result_row["product_id"] = inventory_row[
+                    "product_id"
+                ]
+
+            if "supplier_id" in inventory_row.index:
+                result_row["supplier_id"] = inventory_row[
+                    "supplier_id"
+                ]
+
+            if "supplier_name" in inventory_row.index:
+                result_row["supplier_name"] = inventory_row[
+                    "supplier_name"
+                ]
+
+            successful_results.append(result_row)
+
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
             skipped_products.append(
                 {
                     "product_name": product_name,
@@ -220,12 +437,7 @@ def forecast_products(
                 }
             )
 
-    successful_results_df = pd.DataFrame(
-        successful_results
+    return (
+        pd.DataFrame(successful_results),
+        pd.DataFrame(skipped_products),
     )
-
-    skipped_products_df = pd.DataFrame(
-        skipped_products
-    )
-
-    return successful_results_df, skipped_products_df
