@@ -1,0 +1,7 @@
+Sale Date,Transaction Number,Item,Product Category,Qty,Selling Price,Purchase Price,Discount %
+2026-01-11,T028,Coca Cola 500ml,Beverage,10,60,45,0
+2026-01-11,T029,Wai Wai Noodles,Grocery,20,35,25,0
+2026-01-12,T030,Milk 1L,Dairy,12,85,70,5
+2026-01-12,T031,Bread,Dairy,15,55,40,0
+2026-01-13,T032,Basmati Rice 5kg,Grocery,5,420,360,0
+2026-01-13,T033,Pepsi 500ml,Beverage,18,60,45,0

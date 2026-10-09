@@ -1,0 +1,1162 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+
+from src.ingestion.loader import load_uploaded_file
+from src.cleaning.standardize import (
+    standardize_columns,
+)
+
+from src.cleaning.quality import (
+    check_required_columns,
+    generate_quality_report,
+)
+
+from src.analytics.sales import (
+    prepare_sales_data,
+    calculate_kpis,
+    top_products,
+    sales_by_category,
+)
+from src.analytics.inventory import (
+    calculate_inventory_metrics,
+    add_stock_status,
+    inventory_summary,
+)
+
+from src.forecasting.product_service import forecast_products
+
+
+# ---------------------------------------------------------
+# PAGE CONFIGURATION
+# ---------------------------------------------------------
+
+st.set_page_config(
+    page_title="Bhutan BI AI",
+    page_icon="🇧🇹",
+    layout="wide",
+)
+
+
+# ---------------------------------------------------------
+# HEADER
+# ---------------------------------------------------------
+
+st.title("🇧🇹 Bhutan Business Intelligence AI")
+
+st.markdown(
+    """
+    **AI-powered business analytics for Bhutanese businesses**
+
+    Upload your sales data to understand revenue, profit,
+    products and business performance.
+    """
+)
+# ---------------------------------------------------------
+# APPLICATION NAVIGATION
+# ---------------------------------------------------------
+
+st.sidebar.title("🇧🇹 Bhutan BI AI")
+
+page = st.sidebar.radio(
+    "Navigate",
+    [
+        "Business Overview",
+        "Inventory Intelligence",
+        "AI Forecast & Reorder",
+    ],
+)
+
+# ---------------------------------------------------------
+# SIDEBAR
+# ---------------------------------------------------------
+
+st.sidebar.header("📂 Data")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Upload your sales data",
+    type=["csv", "xlsx", "xls"],
+)
+
+
+# ---------------------------------------------------------
+# LOAD DATA
+# ---------------------------------------------------------
+
+if "sample_data_loaded" not in st.session_state:
+    st.session_state.sample_data_loaded = False
+
+
+if uploaded_file is None:
+
+    st.info(
+        "Upload a CSV or Excel sales file from the sidebar "
+        "to begin analyzing your business."
+    )
+
+    st.subheader("🧪 Development Mode")
+
+    st.write(
+        "You can also test the dashboard using our sample "
+        "Bhutanese retail dataset."
+    )
+
+    use_sample = st.button(
+        "Load Sample Retail Data"
+    )
+
+    if use_sample:
+        st.session_state.sample_data_loaded = True
+
+    if not st.session_state.sample_data_loaded:
+        st.stop()
+
+    try:
+
+        df = pd.read_csv(
+            "data/sample/retail_sales.csv"
+        )
+        inventory_df = pd.read_csv(
+            "data/sample/retail_inventory.csv"
+        )
+
+        st.success(
+            "Sample retail dataset loaded successfully."
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Could not load sample data: {e}"
+        )
+
+        st.stop()
+
+else:
+
+    # A real uploaded file takes priority over sample data.
+    st.session_state.sample_data_loaded = False
+
+    try:
+
+        df = load_uploaded_file(
+            uploaded_file,
+            uploaded_file.name,
+        )
+
+        st.success(
+            f"Successfully loaded: {uploaded_file.name}"
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Could not read the uploaded file: {e}"
+        )
+
+        st.stop()
+
+
+# ---------------------------------------------------------
+# PREPARE DATA
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# SMART COLUMN DETECTION
+# ---------------------------------------------------------
+
+df, detection = standardize_columns(df)
+
+mapping = detection["mapping"]
+unmapped_columns = detection["unmapped_columns"]
+
+
+# ---------------------------------------------------------
+# SHOW COLUMN MAPPING
+# ---------------------------------------------------------
+
+with st.expander("🧠 Detected Data Structure", expanded=False):
+
+    if mapping:
+
+        st.write("### Recognized Columns")
+
+        mapping_df = pd.DataFrame(
+            [
+                {
+                    "Uploaded Column": original,
+                    "Standard Column": standard,
+                }
+                for original, standard in mapping.items()
+            ]
+        )
+
+        st.dataframe(
+            mapping_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if unmapped_columns:
+
+        st.write("### Other Columns")
+
+        st.write(
+            ", ".join(
+                str(column)
+                for column in unmapped_columns
+            )
+        )
+
+
+# ---------------------------------------------------------
+# REQUIRED COLUMN CHECK
+# ---------------------------------------------------------
+
+missing_columns = check_required_columns(df)
+
+if missing_columns:
+
+    st.error(
+        "This dataset is missing required columns: "
+        + ", ".join(missing_columns)
+    )
+
+    st.info(
+        """
+        Required fields:
+
+        • Date
+        • Product name
+        • Quantity
+        • Unit price
+        """
+    )
+
+    st.stop()
+
+
+# ---------------------------------------------------------
+# DATA QUALITY REPORT
+# ---------------------------------------------------------
+
+quality = generate_quality_report(df)
+
+
+with st.expander("🩺 Data Quality Report"):
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Rows",
+            f"{quality['total_rows']:,}",
+        )
+
+    with col2:
+
+        st.metric(
+            "Columns",
+            f"{quality['total_columns']:,}",
+        )
+
+    with col3:
+
+        st.metric(
+            "Duplicates",
+            f"{quality['duplicate_rows']:,}",
+        )
+
+    with col4:
+
+        st.metric(
+            "Missing Values",
+            f"{quality['missing_values']:,}",
+        )
+
+    st.write(
+        f"**Invalid dates:** "
+        f"{quality['invalid_dates']:,}"
+    )
+
+    st.write(
+        f"**Invalid quantities:** "
+        f"{quality['invalid_quantities']:,}"
+    )
+
+    st.write(
+        f"**Invalid prices:** "
+        f"{quality['invalid_prices']:,}"
+    )
+
+
+# ---------------------------------------------------------
+# PREPARE DATA
+# ---------------------------------------------------------
+
+try:
+
+    df = prepare_sales_data(df)
+
+except Exception as e:
+
+    st.error(
+        f"The dataset could not be processed: {e}"
+    )
+
+    st.stop()
+
+# ---------------------------------------------------------
+# DATA OVERVIEW
+# ---------------------------------------------------------
+
+with st.expander("🔎 View Raw Data"):
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+    )
+
+# ---------------------------------------------------------
+# INVENTORY INTELLIGENCE
+# ---------------------------------------------------------
+
+if page == "Inventory Intelligence":
+
+    st.title("📦 Inventory Intelligence")
+
+    inventory_columns = {
+        "product_id",
+        "product_name",
+        "category",
+        "closing_stock",
+    }
+
+    missing_inventory_columns = (
+        inventory_columns - set(inventory_df.columns)
+    )
+
+    if missing_inventory_columns:
+
+        st.warning(
+            "This dataset does not contain enough inventory "
+            "information."
+        )
+
+        st.write(
+            "Missing columns:"
+        )
+
+        st.write(
+            ", ".join(
+                sorted(missing_inventory_columns)
+            )
+        )
+
+        st.info(
+            """
+            Inventory analysis requires:
+
+            • Product ID
+            • Product name
+            • Category
+            • Closing stock
+            """
+        )
+
+        st.stop()
+
+    # -----------------------------------------------------
+    # INVENTORY CALCULATIONS
+    # -----------------------------------------------------
+
+    inventory_metrics = calculate_inventory_metrics(
+        sales_df=df,
+        inventory_df=inventory_df,
+    )
+
+    inventory_metrics = add_stock_status(
+        inventory_metrics
+    )
+
+    summary = inventory_summary(
+        inventory_metrics
+    )
+
+    # -----------------------------------------------------
+    # INVENTORY KPIs
+    # -----------------------------------------------------
+
+    st.subheader("Inventory Overview")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.metric(
+            "Products",
+            f"{summary['products']:,}",
+        )
+
+    with col2:
+
+        st.metric(
+            "Low Stock",
+            f"{summary['low_stock']:,}",
+        )
+
+    with col3:
+
+        st.metric(
+            "Out of Stock",
+            f"{summary['out_of_stock']:,}",
+        )
+
+    with col4:
+
+        st.metric(
+            "Overstocked",
+            f"{summary['overstocked']:,}",
+        )
+
+    # -----------------------------------------------------
+    # STOCK STATUS
+    # -----------------------------------------------------
+
+    st.subheader("🚦 Stock Status")
+
+    status_counts = (
+        inventory_metrics["stock_status"]
+        .value_counts()
+        .reset_index()
+    )
+
+    status_counts.columns = [
+        "status",
+        "products",
+    ]
+
+    fig_status = px.bar(
+        status_counts,
+        x="status",
+        y="products",
+        title="Products by Stock Status",
+    )
+
+    st.plotly_chart(
+        fig_status,
+        use_container_width=True,
+    )
+
+    # -----------------------------------------------------
+    # INVENTORY TABLE
+    # -----------------------------------------------------
+
+    st.subheader("📋 Inventory Details")
+
+    display_columns = [
+        "product_name",
+        "category",
+        "units_sold",
+        "closing_stock",
+        "average_daily_sales",
+        "days_of_stock",
+        "stock_status",
+    ]
+
+    inventory_display = inventory_metrics[
+        display_columns
+    ].copy()
+
+    inventory_display[
+        "average_daily_sales"
+    ] = inventory_display[
+        "average_daily_sales"
+    ].round(2)
+
+    inventory_display[
+        "days_of_stock"
+    ] = inventory_display[
+        "days_of_stock"
+    ].round(1)
+
+    st.dataframe(
+        inventory_display,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # -----------------------------------------------------
+    # LOW STOCK ALERTS
+    # -----------------------------------------------------
+
+    low_stock = inventory_metrics[
+        inventory_metrics["stock_status"] == "Low Stock"
+    ]
+
+    if not low_stock.empty:
+
+        st.subheader("⚠️ Low Stock Alerts")
+
+        st.warning(
+            f"{len(low_stock)} product(s) "
+            "may need attention."
+        )
+
+        st.dataframe(
+            low_stock[
+                [
+                    "product_name",
+                    "closing_stock",
+                    "average_daily_sales",
+                    "days_of_stock",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+
+        st.success(
+            "No low-stock products detected."
+        )
+
+    st.stop()
+
+# ---------------------------------------------------------
+# AI FORECAST & REORDER
+# ---------------------------------------------------------
+
+if page == "AI Forecast & Reorder":
+
+    st.title("🤖 AI Forecast & Reorder")
+
+    st.markdown(
+        """
+        Use historical sales data to forecast future demand and
+        generate inventory reorder recommendations.
+        """
+    )
+
+    st.subheader("Forecast Settings")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        horizon = st.selectbox(
+            "Forecast Horizon",
+            options=[7, 14, 30],
+            index=1,
+            format_func=lambda x: f"{x} days",
+        )
+
+    with col2:
+        lead_time_days = st.number_input(
+            "Supplier Lead Time",
+            min_value=0,
+            value=5,
+            step=1,
+        )
+
+    with col3:
+        safety_stock = st.number_input(
+            "Safety Stock",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+        )
+
+    st.info(
+        "The forecasting engine automatically evaluates historical "
+        "patterns and selects the best-performing model using "
+        "time-series backtesting."
+    )
+
+    run_forecast = st.button(
+        "🔮 Run AI Forecast",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if run_forecast:
+
+        inventory_columns = {
+            "product_name",
+            "closing_stock",
+        }
+
+        missing_inventory_columns = (
+            inventory_columns - set(inventory_df.columns)
+        )
+
+        if missing_inventory_columns:
+
+            st.error(
+                "Forecasting requires inventory information."
+            )
+
+            st.write(
+                "Missing columns: "
+                + ", ".join(
+                    sorted(missing_inventory_columns)
+                )
+            )
+
+            st.info(
+                """
+                Your dataset needs at least:
+
+                • Product name
+                • Closing stock
+                """
+            )
+
+            st.stop()
+
+        with st.spinner(
+            "Analyzing demand patterns and generating forecasts..."
+        ):
+
+            forecast_results, skipped_products = forecast_products(
+                sales_df=df,
+                inventory_df=inventory_df,
+                horizon=horizon,
+                lead_time_days=lead_time_days,
+                safety_stock=safety_stock,
+            )
+
+        if forecast_results.empty:
+
+            st.warning(
+                "No products could be forecasted from the "
+                "available data."
+            )
+
+        else:
+
+            # -------------------------------------------------
+            # FORECAST SUMMARY
+            # -------------------------------------------------
+
+            reorder_count = int(
+                (
+                    forecast_results["status"]
+                    == "Reorder"
+                ).sum()
+            )
+
+            sufficient_count = int(
+                (
+                    forecast_results["status"]
+                    == "Sufficient Stock"
+                ).sum()
+            )
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Products Forecasted",
+                    f"{len(forecast_results):,}",
+                )
+
+            with col2:
+                st.metric(
+                    "Products Needing Reorder",
+                    f"{reorder_count:,}",
+                )
+
+            with col3:
+                st.metric(
+                    "Sufficient Stock",
+                    f"{sufficient_count:,}",
+                )
+
+            # -------------------------------------------------
+            # STOCK ACTION SUMMARY
+            # -------------------------------------------------
+
+            st.subheader("📌 Stock Action Summary")
+
+            reorder_count = int(
+                (
+                    forecast_results["status"]
+                    == "Reorder"
+                ).sum()
+            )
+
+            sufficient_count = int(
+                (
+                    forecast_results["status"]
+                    == "Sufficient Stock"
+                ).sum()
+            )
+
+            monitor_count = len(forecast_results) - (
+                reorder_count + sufficient_count
+            )
+
+            summary_col1, summary_col2, summary_col3 = st.columns(3)
+
+            with summary_col1:
+                st.error(
+                    f"🔴 Reorder Now\n\n"
+                    f"**{reorder_count}** product(s)"
+                )
+
+            with summary_col2:
+                st.warning(
+                    f"🟡 Monitor Stock\n\n"
+                    f"**{monitor_count}** product(s)"
+                )
+
+            with summary_col3:
+                st.success(
+                    f"🟢 Stock Sufficient\n\n"
+                    f"**{sufficient_count}** product(s)"
+                )
+
+            st.divider()
+
+            # -------------------------------------------------
+            # REORDER ALERTS
+            # -------------------------------------------------
+
+            reorder_products = forecast_results[
+                forecast_results["status"] == "Reorder"
+            ].copy()
+
+            if not reorder_products.empty:
+
+                st.subheader("🚨 Products Needing Reorder")
+
+                st.warning(
+                    f"{len(reorder_products)} product(s) "
+                    "should be reviewed for replenishment."
+                )
+
+                for _, product in reorder_products.iterrows():
+
+                    product_name = product["product_name"]
+                    forecast_demand = product["forecast_demand"]
+                    current_stock = product["current_stock"]
+                    reorder_point = product["reorder_point"]
+                    recommended_order = product[
+                        "recommended_order_quantity"
+                    ]
+
+                    with st.expander(
+                        f"🔴 {product_name} — Reorder Now",
+                        expanded=True,
+                    ):
+
+                        col1, col2, col3, col4 = st.columns(4)
+
+                        with col1:
+                            st.metric(
+                                "Expected Demand",
+                                f"{forecast_demand:.0f}",
+                            )
+
+                        with col2:
+                            st.metric(
+                                "Current Stock",
+                                f"{current_stock:.0f}",
+                            )
+
+                        with col3:
+                            st.metric(
+                                "Reorder Point",
+                                f"{reorder_point:.0f}",
+                            )
+
+                        with col4:
+                            st.metric(
+                                "Recommended Order",
+                                f"{recommended_order:.0f}",
+                            )
+
+                        st.write(
+                            f"**Business action:** Consider ordering "
+                            f"**{recommended_order:.0f} units** of "
+                            f"**{product_name}**."
+                        )
+
+                        st.caption(
+                            f"Forecast model: {product['best_model']} · "
+                            f"Backtested WAPE: {product['wape']:.1f}% · "
+                            f"Reliability: "
+                            f"{product['reliability_score']:.0f}/100"
+                        )
+
+            else:
+
+                st.success(
+                    "✅ No products currently require a reorder."
+                )
+            # -------------------------------------------------
+            # BUSINESS RECOMMENDATIONS
+            # -------------------------------------------------
+
+            st.subheader(
+                "📊 Business Recommendations"
+            )
+
+            st.caption(
+                "Use these recommendations to decide what to reorder "
+                "and how much stock may be needed."
+            )
+
+            business_display = forecast_results[
+                [
+                    "product_name",
+                    "forecast_demand",
+                    "current_stock",
+                    "reorder_point",
+                    "recommended_order_quantity",
+                    "status",
+                ]
+            ].copy()
+
+            business_display.columns = [
+                "Product",
+                f"Expected Demand ({horizon} Days)",
+                "Current Stock",
+                "Reorder Point",
+                "Recommended Order",
+                "Stock Decision",
+            ]
+
+            st.dataframe(
+                business_display,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # -------------------------------------------------
+            # MODEL PERFORMANCE
+            # -------------------------------------------------
+
+            st.subheader(
+                "🧠 Forecast Model Performance"
+            )
+
+            model_summary = (
+                forecast_results[
+                    [
+                        "product_name",
+                        "best_model",
+                        "wape",
+                        "reliability_score",
+                    ]
+                ]
+                .copy()
+                .sort_values("wape")
+            )
+
+            model_summary.columns = [
+                "Product",
+                "Selected Model",
+                "Backtested WAPE (%)",
+                "Reliability Score",
+            ]
+
+            st.dataframe(
+                model_summary,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # -------------------------------------------------
+            # AI DEMAND INSIGHTS
+            # -------------------------------------------------
+
+            st.subheader(
+                "🧠 AI Demand Insights"
+            )
+
+            st.caption(
+                "Trend insights are based on historical demand "
+                "patterns. Evidence strength reflects how much "
+                "historical data is available to support the "
+                "trend interpretation."
+            )
+
+            for _, product in forecast_results.iterrows():
+
+                with st.expander(
+                    f"{product['product_name']} — "
+                    f"{str(product['trend']).title()}"
+                ):
+
+                    insight_col1, insight_col2, insight_col3 = (
+                        st.columns(3)
+                    )
+
+                    with insight_col1:
+                        st.metric(
+                            "Trend",
+                            str(
+                                product["trend"]
+                            ).title(),
+                        )
+
+                    with insight_col2:
+                        st.metric(
+                            "Evidence",
+                            str(
+                                product["trend_evidence"]
+                            ).replace("_", " ").title(),
+                        )
+
+                    with insight_col3:
+                        st.metric(
+                            "Confidence",
+                            str(
+                                product["trend_confidence"]
+                            ).replace("_", " ").title(),
+                        )
+
+                    st.markdown(
+                        "**Business Interpretation**"
+                    )
+
+                    st.write(
+                        product["trend_statement"]
+                    )
+
+                    st.markdown(
+                        "**Forecast Reliability**"
+                    )
+
+                    st.write(
+                        product["reliability_rating"]
+                        .replace("_", " ")
+                        .title()
+                        + " — "
+                        + product["caution_statement"]
+                    )
+
+        # -----------------------------------------------------
+        # SKIPPED PRODUCTS
+        # -----------------------------------------------------
+
+        if not skipped_products.empty:
+
+            st.subheader(
+                "⚠️ Products Not Forecasted"
+            )
+
+            st.warning(
+                f"{len(skipped_products)} product(s) "
+                "could not be forecasted."
+            )
+
+            skipped_display = skipped_products.copy()
+
+            skipped_display.columns = [
+                "Product",
+                "Reason",
+            ]
+
+            st.dataframe(
+                skipped_display,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.stop()
+
+
+# ---------------------------------------------------------
+# KPI CALCULATIONS
+# ---------------------------------------------------------
+
+kpis = calculate_kpis(df)
+
+# ---------------------------------------------------------
+# KPI CALCULATIONS
+# ---------------------------------------------------------
+
+kpis = calculate_kpis(df)
+
+
+# ---------------------------------------------------------
+# KPI CARDS
+# ---------------------------------------------------------
+
+st.subheader("📊 Business Overview")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+
+    st.metric(
+        "Revenue",
+        f"Nu. {kpis['revenue']:,.0f}",
+    )
+
+with col2:
+
+    st.metric(
+        "Gross Profit",
+        f"Nu. {kpis['profit']:,.0f}",
+    )
+
+with col3:
+
+    st.metric(
+        "Transactions",
+        f"{kpis['transactions']:,}",
+    )
+
+with col4:
+
+    st.metric(
+        "Profit Margin",
+        f"{kpis['profit_margin']:.2f}%",
+    )
+
+
+# ---------------------------------------------------------
+# SECONDARY KPIs
+# ---------------------------------------------------------
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    st.metric(
+        "Total Cost",
+        f"Nu. {kpis['cost']:,.0f}",
+    )
+
+with col2:
+
+    st.metric(
+        "Average Order Value",
+        f"Nu. {kpis['average_order_value']:,.0f}",
+    )
+
+with col3:
+
+    st.metric(
+        "Products Sold",
+        f"{df['product_name'].nunique():,}",
+    )
+
+
+# ---------------------------------------------------------
+# REVENUE TREND
+# ---------------------------------------------------------
+
+st.subheader("📈 Revenue Trend")
+
+daily_sales = (
+    df.groupby("date", as_index=False)
+    .agg(
+        revenue=("revenue", "sum"),
+        profit=("profit", "sum"),
+    )
+)
+
+fig_revenue = px.line(
+    daily_sales,
+    x="date",
+    y="revenue",
+    markers=True,
+    title="Daily Revenue",
+)
+
+fig_revenue.update_layout(
+    xaxis_title="Date",
+    yaxis_title="Revenue (Nu.)",
+)
+
+st.plotly_chart(
+    fig_revenue,
+    use_container_width=True,
+)
+
+
+# ---------------------------------------------------------
+# PRODUCT & CATEGORY ANALYSIS
+# ---------------------------------------------------------
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+
+    st.subheader("🏆 Top Products")
+
+    products = top_products(df)
+
+    fig_products = px.bar(
+        products.sort_values("revenue"),
+        x="revenue",
+        y="product_name",
+        orientation="h",
+        title="Top Products by Revenue",
+    )
+
+    st.plotly_chart(
+        fig_products,
+        use_container_width=True,
+    )
+
+
+with col2:
+
+    st.subheader("📦 Sales by Category")
+
+    categories = sales_by_category(df)
+
+    fig_categories = px.pie(
+        categories,
+        values="revenue",
+        names="category",
+        title="Revenue Distribution",
+    )
+
+    st.plotly_chart(
+        fig_categories,
+        use_container_width=True,
+    )
+
+
+# ---------------------------------------------------------
+# PRODUCT TABLE
+# ---------------------------------------------------------
+
+st.subheader("📋 Product Performance")
+
+products_display = top_products(df)
+
+products_display["revenue"] = (
+    products_display["revenue"]
+    .round(2)
+)
+
+products_display["profit"] = (
+    products_display["profit"]
+    .round(2)
+)
+
+st.dataframe(
+    products_display,
+    use_container_width=True,
+)
+
+
+# ---------------------------------------------------------
+# FOOTER
+# ---------------------------------------------------------
+
+st.divider()
+
+st.caption(
+    "Bhutan Business Intelligence AI — MVP v0.1"
+)
