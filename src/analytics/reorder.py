@@ -25,28 +25,121 @@ def calculate_recommended_order_quantity(
     current_stock: float,
     forecast_demand: float,
     safety_stock: float = 0.0,
+    incoming_stock: float = 0.0,
+    minimum_order_quantity: int = 0,
+    pack_size: int = 1,
 ) -> int:
+    """
+    Calculate an order quantity using forecast demand,
+    available inventory, incoming stock, and supplier constraints.
+
+    Parameters
+    ----------
+    current_stock:
+        Units currently available in inventory.
+
+    forecast_demand:
+        Expected demand over the planning horizon.
+
+    safety_stock:
+        Additional stock reserved to reduce stockout risk.
+
+    incoming_stock:
+        Units already ordered and expected to arrive.
+
+    minimum_order_quantity:
+        Supplier's minimum order quantity.
+
+    pack_size:
+        Number of units in one supplier pack.
+        The recommended order must be a multiple of this value.
+
+    Returns
+    -------
+    int
+        Recommended quantity to order.
+    """
+
+    # Validate numeric quantities.
     if current_stock < 0:
-        raise ValueError("Current stock cannot be negative.")
+        raise ValueError(
+            "Current stock cannot be negative."
+        )
 
     if forecast_demand < 0:
-        raise ValueError("Forecast demand cannot be negative.")
+        raise ValueError(
+            "Forecast demand cannot be negative."
+        )
 
     if safety_stock < 0:
-        raise ValueError("Safety stock cannot be negative.")
+        raise ValueError(
+            "Safety stock cannot be negative."
+        )
 
+    if incoming_stock < 0:
+        raise ValueError(
+            "Incoming stock cannot be negative."
+        )
+
+    if minimum_order_quantity < 0:
+        raise ValueError(
+            "Minimum order quantity cannot be negative."
+        )
+
+    if pack_size < 1:
+        raise ValueError(
+            "Pack size must be at least 1."
+        )
+
+    if not isinstance(minimum_order_quantity, int):
+        raise ValueError(
+            "Minimum order quantity must be an integer."
+        )
+
+    if not isinstance(pack_size, int):
+        raise ValueError(
+            "Pack size must be an integer."
+        )
+
+    # Calculate the stock required for the planning horizon.
     required_stock = (
-        forecast_demand
-        + safety_stock
+        forecast_demand + safety_stock
     )
 
-    order_quantity = max(
-        required_stock - current_stock,
+    # Account for stock already available or expected to arrive.
+    available_stock = (
+        current_stock + incoming_stock
+    )
+
+    # Calculate the remaining quantity needed.
+    net_requirement = max(
+        required_stock - available_stock,
         0,
     )
 
-    return math.ceil(order_quantity)
+    # No order is necessary if existing and incoming stock
+    # can cover the requirement.
+    if net_requirement == 0:
+        return 0
 
+    # Round up to whole units.
+    order_quantity = math.ceil(
+        net_requirement
+    )
+
+    # Respect the supplier's minimum order quantity.
+    order_quantity = max(
+        order_quantity,
+        minimum_order_quantity,
+    )
+
+    # Round up to the next valid supplier pack multiple.
+    order_quantity = (
+        math.ceil(order_quantity / pack_size)
+        * pack_size
+    )
+
+    return int(order_quantity)
 
 def classify_reorder_status(
     current_stock: float,

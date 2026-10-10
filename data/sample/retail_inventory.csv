@@ -1,8 +1,8 @@
-product_id,product_name,category,closing_stock
-P001,Coca Cola 500ml,Beverage,85
-P002,Wai Wai Noodles,Grocery,120
-P003,Milk 1L,Dairy,35
-P004,Basmati Rice 5kg,Grocery,250
-P005,Potato Chips 100g,Snacks,45
-P006,Bread,Bakery,25
-P007,Pepsi 500ml,Beverage,70
+product_id,product_name,category,closing_stock,supplier_id,supplier_name,lead_time_days,safety_stock,incoming_stock,minimum_order_quantity,pack_size
+P001,Coca Cola 500ml,Beverage,85,S001,Bhutan Beverage Supplier,3,15,24,12,12
+P002,Wai Wai Noodles,Grocery,120,S002,Thimphu Wholesale,5,20,0,24,12
+P003,Milk 1L,Dairy,35,S003,Local Dairy Supplier,2,10,12,6,6
+P004,Basmati Rice 5kg,Grocery,250,S004,Food Distributor,7,30,0,10,5
+P005,Potato Chips 100g,Snacks,45,S001,Bhutan Beverage Supplier,4,10,20,12,12
+P006,Bread,Bakery,25,S005,Local Bakery Supplier,1,5,0,10,5
+P007,Pepsi 500ml,Beverage,70,S001,Bhutan Beverage Supplier,3,15,12,12,12
